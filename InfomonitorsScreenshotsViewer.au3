@@ -1,12 +1,12 @@
 #Region ;**** Directives created by AutoIt3Wrapper_GUI ****
 #AutoIt3Wrapper_Icon=icon.ico
-#EndRegion ;**** Directives created by AutoIt3Wrapper_GUI ****
 #pragma compile(ProductVersion, 0.3)
 #pragma compile(UPX, true)
 #pragma compile(CompanyName, 'ООО Клиника ЛМС')
 #pragma compile(FileDescription, Скрипт для отображения скриншотов инфомониторов)
-#pragma compile(LegalCopyright, Грашкин Павел Павлович - Нижний Новгород - 31-555)
-#pragma compile(ProductName, create_print_statistics_for_all)
+#pragma compile(LegalCopyright, Грашкин Павел Павлович - Нижний Новгород - 31-555 - nn-admin@nnkk.budzdorov.su)
+#pragma compile(ProductName, InfoscreenScreenshotsViewer)
+#EndRegion ;**** Directives created by AutoIt3Wrapper_GUI ****
 
 #include <Constants.au3>
 #include <GUIConstantsEx.au3>
@@ -22,9 +22,19 @@
 #include <AD.au3>
 #include <GUIScrollbars_Ex.au3>
 #include <GDIPlus.au3>
+#include <File.au3>
 
 
 #Region ==========================	 Variables	 ==========================
+Local $isGui = True
+If $CmdLine[0] > 0 Then
+   If $CmdLine[1] = "silent" Then $isGui = False
+EndIf
+
+Local $current_pc_name = @ComputerName
+Local $errStr = "===ERROR=== "
+Local $messageToSend = ""
+
 Local $oMyError = ObjEvent("AutoIt.Error","HandleComError")
 Local $iniFile = "\\budzdorov.ru\NETLOGON\Restart_Infoscreen\autorun_for_all_infomonitors_settings.ini"
 
@@ -46,6 +56,8 @@ $index = _ArraySearch($allSections, "general")
 If Not @error Then _ArrayDelete($allSections, $index)
 $index = _ArraySearch($allSections, "mail")
 If Not @error Then _ArrayDelete($allSections, $index)
+$index = _ArraySearch($allSections, "mail_viewer")
+If Not @error Then _ArrayDelete($allSections, $index)
 
 If Not UBound($allSections) Then
 	MsgBox($MB_ICONERROR, @ScriptName, "Cannot find any organization sections in the settings file: " & $iniFile)
@@ -53,36 +65,28 @@ If Not UBound($allSections) Then
 EndIf
 
 _ArraySort($allSections)
-_ArrayColInsert($allSections, 1)
-#EndRegion
+If $isGui Then _ArrayColInsert($allSections, 1)
 
+Local $mailSection = "mail_viewer"
+Local $server_backup = "172.16.6.6"
+Local $login_backup = "infoscreen_screenshots_viewer@nnkk.budzdorov.su"
+Local $password_backup = "paqafapy"
+Local $to_backup = "nn-admin@bzklinika.ru"
+Local $send_email_backup = "1"
 
-#Region ==========================	 GUI	 ==========================
-Local $mainGui = GUICreate("Infomonitors Screenshots Viewer", 300, 400)
-GUISetFont(10)
+Local $server = IniRead($iniFile, $mailSection, "server", $server_backup)
+Local $login = IniRead($iniFile, $mailSection, "login", $login_backup)
+Local $password = IniRead($iniFile, $mailSection, "password", $password_backup)
+Local $to = IniRead($iniFile, $mailSection, "to", $to_backup)
+Local $send_email = IniRead($iniFile, $mailSection, "send_email", $send_email_backup)
 
-Local $periodLabel = GUICtrlCreateLabel("Select organization(s) to view screenshots", 10, 12, 280, 20, $SS_CENTER)
-
-Local $listView = GUICtrlCreateListView("Name", 10, 40, 280, 270, BitOr($LVS_SHOWSELALWAYS, $LVS_REPORT, $LVS_NOCOLUMNHEADER))
-GUICtrlSetState(-1, $GUI_FOCUS)
-_GUICtrlListView_SetColumnWidth($listView, 0, 272)
-_GUICtrlListView_AddArray($listView, $allSections)
-
-Local $helpLabel = GUICtrlCreateLabel("Press and hold the ctrl or the shift key to select several lines", _
-	10, 310, 280, 15, $SS_CENTER)
-GUICtrlSetFont(-1, 8)
-GUICtrlSetColor(-1, $COLOR_GRAY)
-
-Local $showOnlyError = GUICtrlCreateCheckbox("Display only computers with problems", 10, 330, 280, 20)
-GUICtrlSetState(-1, $GUI_CHECKED)
-
-Local $selectAllButton = GUICtrlCreateButton("Select all", 10, 360, 120, 30)
-Local $viewButton = GUICtrlCreateButton("View", 170, 360, 120, 30)
-GUICtrlSetState(-1, $GUI_DISABLE)
-
-GUISetState(@SW_SHOW)
-GUIRegisterMsg($WM_NOTIFY, "MY_WM_NOTIFY")
-
+Local $mainGui = 0
+Local $switchTextError = "Show problems"
+Local $switchTextAll = "Show all"
+Local $selectAllButton = 0
+Local $showOnlyError = 0
+Local $viewButton = 0
+Local $listView = 0
 Local $viewerGui = 0
 Local $childGUI = 0
 Local $titleGUI = 0
@@ -97,139 +101,70 @@ Local $currentHour = 0
 Local $selectedItems[0][4]
 Local $totalComputers = 0
 Local $needToView = 0
-
-Local $switchTextError = "Show problems"
-Local $switchTextAll = "Show all"
-
-While 1
-	Switch GUIGetMsg()
-		Case $GUI_EVENT_CLOSE
-			Exit
-		Case $selectAllButton
-			SelectAll()
-		Case $viewButton
-			ViewButtonClicked()
-	EndSwitch
-
-	If $needToView Then ViewButtonClicked()
-
-	Sleep(20)
-WEnd
 #EndRegion
 
 
-Func SelectAll($set = True)
-	_GUICtrlListView_BeginUpdate($listView)
+If Not $isGui Then SilentModeCheckScreenshots()
+FormMainGui()
 
+
+Func FormMainGui()
+	$mainGui = GUICreate("Infomonitors Screenshots Viewer", 300, 400)
+	GUISetFont(10)
+
+	Local $periodLabel = GUICtrlCreateLabel("Select organization(s) to view screenshots", 10, 12, 280, 20, $SS_CENTER)
+
+	$listView = GUICtrlCreateListView("Name", 10, 40, 280, 270, BitOr($LVS_SHOWSELALWAYS, $LVS_REPORT, $LVS_NOCOLUMNHEADER))
+	GUICtrlSetState(-1, $GUI_FOCUS)
+	_GUICtrlListView_SetColumnWidth($listView, 0, 272)
+	_GUICtrlListView_AddArray($listView, $allSections)
+
+	Local $helpLabel = GUICtrlCreateLabel("Press and hold the ctrl or the shift key to select several lines", _
+		10, 310, 280, 15, $SS_CENTER)
+	GUICtrlSetFont(-1, 8)
+	GUICtrlSetColor(-1, $COLOR_GRAY)
+
+	$showOnlyError = GUICtrlCreateCheckbox("Display only computers with problems", 10, 330, 280, 20)
+	GUICtrlSetState(-1, $GUI_CHECKED)
+
+	$selectAllButton = GUICtrlCreateButton("Select all", 10, 360, 120, 30)
+	$viewButton = GUICtrlCreateButton("View", 170, 360, 120, 30)
+	GUICtrlSetState(-1, $GUI_DISABLE)
+
+	GUISetState(@SW_SHOW)
+	GUIRegisterMsg($WM_NOTIFY, "MY_WM_NOTIFY")
+
+	While 1
+		Switch GUIGetMsg()
+			Case $GUI_EVENT_CLOSE
+				Exit
+			Case $selectAllButton
+				SelectAllButtonClicked()
+			Case $viewButton
+				ViewButtonClicked()
+		EndSwitch
+
+		If $needToView Then ViewButtonClicked()
+
+		Sleep(20)
+	WEnd
+EndFunc
+
+
+Func FormChildGui()
+	ToLog("---FormChildGui---")
+
+	Local $selectedItemsInList[0]
 	For $i = 0 To _GUICtrlListView_GetItemCount($listView)
-		_GUICtrlListView_SetItemSelected($listView, $i, $set, $set)
+		If _GUICtrlListView_GetItemSelected($listView, $i) Then _
+			_ArrayAdd($selectedItemsInList, _GUICtrlListView_GetItemTextString($listView, $i))
 	Next
 
-	GUICtrlSetState($listView, $GUI_FOCUS)
-	_GUICtrlListView_EndUpdate($listView)
-	GUICtrlSetState($viewButton, $GUI_ENABLE)
-EndFunc
-
-
-Func CheckSelected()
-	Local $ret = False
-	For $i = 0 To _GUICtrlListView_GetItemCount($listView)
-		If _GUICtrlListView_GetItemSelected($listView, $i) Then
-		 $ret = True
-		 GUICtrlSetState($viewButton, $GUI_ENABLE)
-		 ExitLoop
-		EndIf
-	Next
-	If Not $ret Then GUICtrlSetState($viewButton, $GUI_DISABLE)
-EndFunc
-
-
-Func ViewButtonClicked()
-	ToLog("---ViewButtonClicked---")
-	$viewerGui = 0
-	$childGUI = 0
-	$needToExit = False
-;~ 	$titleLabel = 0
-	$prevHour = 0
-	$nexHour = 0
-;~ 	$switchView = 0
-;~ 	$closeAllButton = 0
-	$currentDate = 0
-	$currentHour = 0
-	Local $tempArray[0][4]
-	$selectedItems = $tempArray
-	$totalComputers = 0
-	$dW = 0
-	$dH = 0
-	$needToView = 0
-
-	CreateChild()
-
-	Opt("GUIOnEventMode", 0)
-EndFunc
-
-
-Func MY_WM_NOTIFY($hWnd, $Msg, $wParam, $lParam)
-	If  $wParam <> $listView Then Return
-
-	Local $tagNMHDR, $event, $hwndFrom, $code
-	$tagNMHDR = DllStructCreate("int;int;int", $lParam)
-	If @error Then Return
-	$event = DllStructGetData($tagNMHDR, 3)
-
-
-	If $event = $NM_CLICK Or $event = -12 Then
-		CheckSelected()
-	ElseIf $event = $NM_DBLCLK Then
-		$needToView = 1
-	EndIf
-
-	$tagNMHDR = 0
-	$lParam = 0
-	$event = 0
-EndFunc
-
-
-Func CreateChild()
-	ToLog("---CreateChild---")
-	_AD_Open()
-	If @error Then
-		MsgBox(16, "Infomonitors Screenshots Viewer", "Function _AD_Open encountered a problem. @error = " & @error & ", @extended = " & @extended)
+	$selectedItems = GetAdResultsForSelectedItems($selectedItemsInList)
+	If Not UBound($selectedItems, $UBOUND_ROWS) Then
+		ToLog("FormChildGui $selectedItems contains no rows")
 		Return
 	EndIf
-
-	Local $sFQDN = _AD_SamAccountNameToFQDN()
-	Local $iPos = StringInStr($sFQDN, ",")
-	Local $sOU = StringMid($sFQDN, $iPos + 1)
-	Local $aObjects[1][1]
-
-	$currentHour = @HOUR
-	Local $tempArray[0][4]
-	$selectedItems = $tempArray
-	$totalComputers = 0
-
-	For $i = 0 To _GUICtrlListView_GetItemCount($listView)
-		If Not _GUICtrlListView_GetItemSelected($listView, $i) Then ContinueLoop
-		Local $currentOu[1][4]
-		$currentOu[0][0] = _GUICtrlListView_GetItemTextString($listView, $i)
-		$currentOu[0][1] = IniRead($iniFile, $currentOu[0][0], "screenshot_optional_path", "")
-		$currentOu[0][2] = IniRead($iniFile, $currentOu[0][0], "main_ou", "")
-
-		If $currentOu[0][2] Then
-			Local $result = _AD_GetObjectsInOU($currentOu[0][2], "(&(objectCategory=computer)(name=*))", 2, "objectCategory,cn,distinguishedName")
-
-			If @error Then
-				MsgBox(64, "Infomonitors Screenshots Viewer", "No OUs could be found for " & $currentOu[0][2])
-			Else
-				$currentOu[0][3] = $result
-				$totalComputers += $result[0][0]
-			EndIf
-		EndIf
-
-		_ArrayAdd($selectedItems, $currentOu)
-	Next
-
-	_AD_Close()
 
 	$dW = @DesktopWidth
 	$dH = @DesktopHeight - 40
@@ -246,17 +181,15 @@ Func CreateChild()
 
 	Opt("GUIOnEventMode", 1)
 	$viewerGui = GUICreate("Infomonitors Screenshots Results", 0, $dH, 0, 0)
-	GUISetOnEvent($GUI_EVENT_CLOSE, "CloseChildrenWindow")
+	GUISetOnEvent($GUI_EVENT_CLOSE, "ChildrGuiCloseButtonClicked")
 	GUISetFont(10)
-;~ 	GUISwitch($viewerGui)
 
 	WinMove("Infomonitors Screenshots Results", "", 0, 0, $dW, $dH)
-;~ 	WinMove("Infomonitors Screenshots Results", "", 0, 0, 800, 600);$dW, $dH)
 
 	$dW = WinGetClientSize("Infomonitors Screenshots Results")[0]
 	$dH = WinGetClientSize("Infomonitors Screenshots Results")[1]
 
-	GenerateChildViewingArea()
+	CreateChildViewArea()
 
 	While Not $needToExit
 		Sleep(20)
@@ -264,243 +197,8 @@ Func CreateChild()
 EndFunc
 
 
-Func GenerateChildViewingArea()
-	ToLog("---GenerateChildViewingArea---")
-;~ 	If $titleLabel Then GUICtrlDelete($titleLabel)
-;~ 	If $prevHour Then GUICtrlDelete($prevHour)
-;~ 	If $nexHour Then GUICtrlDelete($nexHour)
-;~ 	If $closeAllButton Then GUICtrlDelete($closeAllButton)
-	If $titleGUI Then GUIDelete($titleGUI)
-	If $childGUI Then GUIDelete($childGUI)
-
-	If StringLen($currentHour) < 2 Then $currentHour = "0" & $currentHour
-
-	GUISwitch($viewerGui)
-	Local $progress = GUICtrlCreateProgress(10, 10, $dW - 20, 15)
-	Local $progressLabel = GUICtrlCreateLabel("", 10, 25, $dW - 20, 15, $SS_CENTER)
-	GUISetState(@SW_SHOW)
-
-	$childGUI = GUICreate("Infomonitors Screenshots Iternal Window", $dW - 20, $dH - 60, 10, 50, $WS_CHILD, -1, $viewerGui)
-	GUISetFont(10)
-
-	Local $totalY = DrawData($selectedItems, $dW - 20, $dH - 60, $totalComputers, $progress, $progressLabel)
-	_GuiScrollbars_Generate($childGUI, -1, $totalY, -1, 1, False, 10, True)
-
-	GUISetState(@SW_SHOW)
-;~ 	GUISwitch($viewerGui)
-	GUICtrlDelete($progress)
-	GUICtrlDelete($progressLabel)
-
-	$titleGUI = GUICreate("Infomonitors Screenshots Window Title", $dW, 60, 0, 0, $WS_CHILD, -1, $viewerGui)
-	GUISetFont(10)
-
-	Local $titleLabel = GUICtrlCreateLabel("The screenshots creation time - " & $currentHour & ":00", ($dW - 340) / 2, _
-		10, 340, 30, BitOR($SS_CENTERIMAGE, $SS_CENTER))
-	GUICtrlSetFont(-1, 14, $FW_BOLD)
-
-	Local $pos = ControlGetPos($viewerGui, "", $titleLabel)
-
-	$prevHour = GUICtrlCreateButton("<<", $pos[0] - 40, 10, 30, 30)
-	If $currentHour = 0 Then GUICtrlSetState(-1, $GUI_DISABLE)
-	GUICtrlSetOnEvent(-1, "PrevHour")
-
-	$nexHour = GUICtrlCreateButton(">>", $pos[0] + $pos[2] + 10, 10, 30, 30)
-	If $currentHour = @HOUR Then GUICtrlSetState(-1, $GUI_DISABLE)
-	GUICtrlSetOnEvent(-1, "HextHour")
-
-	Local $closeAllButton = GUICtrlCreateButton("Close", 10, 10, 120, 30)
-	GUICtrlSetOnEvent(-1, "CloseChildrenWindow")
-
-	Local $switchView = GUICtrlCreateButton((GUICtrlRead($showOnlyError) = $GUI_CHECKED ? $switchTextAll : $switchTextError), _
-		$dW - 130, 10, 120, 30)
-	GUICtrlSetOnEvent(-1, "SwitchView")
-
-	If UBound($childrenButtons, $UBOUND_ROWS) Then ControlFocus($childGUI, "", $childrenButtons[0][0])
-
-	GUISetState(@SW_SHOW)
-EndFunc
-
-
-Func DrawData($data, $width, $height, $total, $progress, $progressLabel)
-	ToLog("---Drawing data---")
-	Local $tempArray[0][4]
-	$childrenButtons = $tempArray
-	Local $mainPath = IniRead($iniFile, "general", "screenshot_path", "")
-	Local $infoscreenColor = IniRead($iniFile, "general", "infoscreen_standard_color", "")
-	Local $infoscreenTimeTableColor = IniRead($iniFile, "general", "infoscreen_timetable_color", "")
-	Local $desktop_color = IniRead($iniFile, "general", "desktop_color", "")
-	Local $onlyError = (GUICtrlRead($showOnlyError) = $GUI_CHECKED ? True : False)
-	$currentDate = @YEAR & @MON & @MDAY
-	Local $imageSizeX = 200
-	Local $imageSizeY = 160
-	Local $dist = 10
-	Local $countX = Floor($width / ($imageSizeX + $dist))
-	Local $totalWidth = $countX * $imageSizeX + ($countX - 1) * $dist
-	Local $startX = ($width - $totalWidth) / 2
-	Local $nameY = 20
-	Local $titleY = 40
-	Local $currentY = 0
-	Local $currentX = $startX
-	Local $compCounter = 0
-
-	For $i = 0 To UBound($data, $UBOUND_ROWS) - 1
-		GUICtrlCreateLabel($data[$i][0], 0, $currentY, $width, $titleY, BitOR($SS_CENTERIMAGE, $SS_CENTER))
-		GUICtrlSetFont(-1, 20, $FW_BOLD)
-		GUICtrlSetBkColor(-1, $COLOR_SILVER)
-		$currentY += $titleY + $dist
-
-		Local $currentData = $data[$i][3]
-		Local $infoscreenOu = IniRead($iniFile, $data[$i][0], "infoscreen_ou_to_run", "")
-		Local $infoscreenTimetableOu = IniRead($iniFile, $data[$i][0], "infoscreen_timetable_ou_to_run", "")
-
-		$infoscreenOu = StringSplit($infoscreenOu, ";", $STR_NOCOUNT)
-		$infoscreenTimetableOu = StringSplit($infoscreenTimetableOu, ";", $STR_NOCOUNT)
-
-		If Not UBound($currentData) Then
-;~ 			ToLog("===ERROR EMPTY ARRAY===")
-			GUICtrlCreateLabel("Cannot find informations in the active directory", 0, _
-				$currentY, $width, $titleY, BitOR($SS_CENTERIMAGE, $SS_CENTER))
-			GUICtrlSetFont(-1, 14, $FW_BOLD)
-			GUICtrlSetColor(-1, $COLOR_WHITE)
-			GUICtrlSetBkColor(-1, $COLOR_RED)
-			$currentY += $titleY + $dist
-			ContinueLoop
-		EndIf
-
-		Local $strInStr = StringInStr(@ComputerName, $data[$i][0])
-		Local $rootPath = $strInStr ? $data[$i][1] : $mainPath
-		Local $resultPath = $data[$i][0] & "\" & $currentDate & "\" & $currentHour & "\" & "*" & ".jpg"
-
-		Local $computersWithProblems = 0
-
-		For $x = 1 To UBound($currentData) - 1
-			$compCounter += 1
-			GUICtrlSetData($progress, ($compCounter / $total) * 100)
-			GUICtrlSetData($progressLabel, "Completed: " & $compCounter & " / " & $total & " current: " & $currentData[$x][1])
-
-			Local $path = $rootPath & StringReplace($resultPath, "*", "_preview_" & $currentData[$x][1])
-
-			If Not FileExists($path) Then _
-				$path = ($strInStr ? $mainPath : $data[$i][1]) & StringReplace($resultPath, "*", "_preview_" & $currentData[$x][1])
-
-			If Not FileExists($path) Then _
-				$path = $rootPath & StringReplace($resultPath, "*", $currentData[$x][1])
-
-			If Not FileExists($path) Then _
-				$path = ($strInStr ? $mainPath : $data[$i][1]) & StringReplace($resultPath, "*", $currentData[$x][1])
-
-			Local $optimalSize = 0
-			If FileExists($path) Then
-				Local $okColor = ""
-
-				If $onlyError Then
-					For $ouName In $infoscreenOu
-						If StringInStr($currentData[$x][2], $ouName) Then $okColor = $infoscreenColor
-					Next
-
-					For $ouName In $infoscreenTimetableOu
-						If StringInStr($currentData[$x][2], $ouName) Then $okColor = $infoscreenTimeTableColor
-					Next
-				EndIf
-
-				$optimalSize = GetOptimalControlSize($imageSizeX, $imageSizeY, $path, $onlyError, $okColor, $desktop_color)
-
-				If $optimalSize = -1 And $onlyError Then
-					If $x = UBound($currentData) - 1 Then
-						$currentX = $startX
-						If $computersWithProblems Then
-							$currentY += $imageSizeY + $nameY + $dist
-						Else
-							GUICtrlCreateLabel("All computers are seems to be ok", 0, $currentY, _
-								$width, $titleY, BitOR($SS_CENTERIMAGE, $SS_CENTER))
-							GUICtrlSetFont(-1, 14, $FW_BOLD)
-							GUICtrlSetBkColor(-1, 0x00FF00)
-							$currentY += $titleY + $dist
-						EndIf
-					EndIf
-
-					ContinueLoop
-				EndIf
-			EndIf
-
-			Local $control[4]
-			$control[0] = GUICtrlCreateLabel("", $currentX - 1, $currentY - 1, $imageSizeX + 2, $imageSizeY + $nameY + 2, $SS_GRAYRECT)
-			GUICtrlSetOnEvent(-1, "CompClicked")
-
-			If Not FileExists($path) Then
-				GUICtrlCreateLabel("Not exist", $currentX, $currentY, $imageSizeX, $imageSizeY, BitOR($SS_CENTER, $SS_CENTERIMAGE))
-				GUICtrlSetBkColor(-1, $COLOR_RED)
-				GUICtrlSetColor(-1, $COLOR_WHITE)
-				GUICtrlSetFont(-1, 14, $FW_BOLD)
-			Else
-				GUICtrlCreateLabel("", $currentX, $currentY, $imageSizeX, $imageSizeY, $SS_WHITERECT)
-				Local $picX = $currentX + ($imageSizeX - $optimalSize[0]) / 2
-				Local $picY = $currentY + ($imageSizeY - $optimalSize[1]) / 2
-				Local $picW = $optimalSize[0]
-				Local $picH = $optimalSize[1]
-				GUICtrlCreatePic($path, $picX, $picY, $picW, $picH)
-				GUICtrlSetImage(-1, $path)
-			EndIf
-
-			$control[3] = GUICtrlCreateLabel($currentData[$x][1], $currentX, $currentY + $imageSizeY, _
-				$imageSizeX, $nameY, BitOR($SS_CENTERIMAGE, $SS_CENTER))
-			GUICtrlSetBkColor(-1, $COLOR_WHITE)
-
-			$computersWithProblems += 1
-
-			$control[1] = $data[$i][0]
-			$control[2] = $currentData[$x][1]
-			_ArrayTranspose($control)
-			_ArrayAdd($childrenButtons, $control)
-
-			$currentX += $imageSizeX + $dist
-			If $currentX + $imageSizeX > $width - $startX Or $x = UBound($currentData) - 1 Then
-				$currentX = $startX
-				$currentY += $imageSizeY + $nameY + $dist
-			EndIf
-		Next
-	Next
-
-	Return $currentY
-EndFunc
-
-
-Func PrevHour()
-	ToLog("---PrevHour---")
-	$currentHour -= 1
-	If $currentHour = 0 Then GUICtrlSetState($prevHour, $GUI_DISABLE)
-	GenerateChildViewingArea()
-EndFunc
-
-
-Func HextHour()
-	ToLog("---HextHour----")
-	$currentHour += 1
-	If $currentHour = 23 Then GUICtrlSetState($nexHour, $GUI_DISABLE)
-	GenerateChildViewingArea()
-EndFunc
-
-
-Func SwitchView()
-	ToLog("---SwitchView---")
-	GUICtrlSetState($showOnlyError, GUICtrlRead($showOnlyError) = $GUI_CHECKED ? $GUI_UNCHECKED : $GUI_CHECKED)
-	GenerateChildViewingArea()
-EndFunc
-
-
-Func CloseChildrenWindow()
-	ToLog("---CloseChildrenWindow---")
-	GUIDelete($viewerGui)
-	GUISwitch($mainGui)
-	SelectAll(False)
-	GUICtrlSetState($viewButton, $GUI_DISABLE)
-	GUISetState(@SW_SHOW)
-	$needToExit = True
-EndFunc
-
-
-Func CompClicked()
-	ToLog("---CompClicked---")
+Func FormComputerDetails()
+	ToLog("---FormComputerDetails---")
 	$detailsGUI = 0
 	Local $index = _ArraySearch($childrenButtons, @GUI_CtrlId)
 	If @error Then Return
@@ -569,7 +267,7 @@ Func CompClicked()
 			GUISetState(@SW_SHOW, $titleGUI)
 
 			If UBound($childrenButtons, $UBOUND_ROWS) Then ControlFocus($childGUI, "", $childrenButtons[0][0])
-			If $msg = $GUI_EVENT_CLOSE Then CloseChildrenWindow()
+			If $msg = $GUI_EVENT_CLOSE Then ChildrGuiCloseButtonClicked()
 			ExitLoop
 		ElseIf $msg = $tryRadmin Then
 			ToLog("---Radmin---")
@@ -635,6 +333,289 @@ Func CompClicked()
 EndFunc
 
 
+
+
+
+Func SelectAllButtonClicked($set = True)
+	_GUICtrlListView_BeginUpdate($listView)
+
+	For $i = 0 To _GUICtrlListView_GetItemCount($listView)
+		_GUICtrlListView_SetItemSelected($listView, $i, $set, $set)
+	Next
+
+	GUICtrlSetState($listView, $GUI_FOCUS)
+	_GUICtrlListView_EndUpdate($listView)
+	GUICtrlSetState($viewButton, $GUI_ENABLE)
+EndFunc
+
+
+Func ViewButtonClicked()
+	ToLog("---ViewButtonClicked---")
+	$viewerGui = 0
+	$childGUI = 0
+	$needToExit = False
+;~ 	$titleLabel = 0
+	$prevHour = 0
+	$nexHour = 0
+;~ 	$switchView = 0
+;~ 	$closeAllButton = 0
+	$currentDate = 0
+	$currentHour = 0
+	Local $tempArray[0][4]
+	$selectedItems = $tempArray
+	$totalComputers = 0
+	$dW = 0
+	$dH = 0
+	$needToView = 0
+
+	FormChildGui()
+
+	Opt("GUIOnEventMode", 0)
+EndFunc
+
+
+Func ChildrGuiCloseButtonClicked()
+	ToLog("---ChildrGuiCloseButtonClicked---")
+	GUIDelete($viewerGui)
+	GUISwitch($mainGui)
+	SelectAllButtonClicked(False)
+	GUICtrlSetState($viewButton, $GUI_DISABLE)
+	GUISetState(@SW_SHOW)
+	$needToExit = True
+EndFunc
+
+
+
+
+Func CreateChildViewArea()
+	ToLog("---CreateChildViewArea---")
+	If $titleGUI Then GUIDelete($titleGUI)
+	If $childGUI Then GUIDelete($childGUI)
+
+	If StringLen($currentHour) < 2 Then $currentHour = "0" & $currentHour
+
+	GUISwitch($viewerGui)
+	Local $progress = GUICtrlCreateProgress(10, 10, $dW - 20, 15)
+	Local $progressLabel = GUICtrlCreateLabel("", 10, 25, $dW - 20, 15, $SS_CENTER)
+	GUISetState(@SW_SHOW)
+
+	$childGUI = GUICreate("Infomonitors Screenshots Iternal Window", $dW - 20, $dH - 60, 10, 50, $WS_CHILD, -1, $viewerGui)
+	GUISetFont(10)
+
+	Local $onlyError = (GUICtrlRead($showOnlyError) = $GUI_CHECKED ? True : False)
+	Local $totalY = CreateScreenshotsThumbinals($selectedItems, $dW - 20, $dH - 60, $totalComputers, $progress, $progressLabel, $onlyError)
+	_GuiScrollbars_Generate($childGUI, -1, $totalY, -1, 1, False, 10, True)
+
+	GUISetState(@SW_SHOW)
+	GUICtrlDelete($progress)
+	GUICtrlDelete($progressLabel)
+
+	$titleGUI = GUICreate("Infomonitors Screenshots Window Title", $dW, 60, 0, 0, $WS_CHILD, -1, $viewerGui)
+	GUISetFont(10)
+
+	Local $titleLabel = GUICtrlCreateLabel("The screenshots creation time - " & $currentHour & ":00", ($dW - 340) / 2, _
+		10, 340, 30, BitOR($SS_CENTERIMAGE, $SS_CENTER))
+	GUICtrlSetFont(-1, 14, $FW_BOLD)
+
+	Local $pos = ControlGetPos($viewerGui, "", $titleLabel)
+
+	$prevHour = GUICtrlCreateButton("<<", $pos[0] - 40, 10, 30, 30)
+	If $currentHour = 0 Then GUICtrlSetState(-1, $GUI_DISABLE)
+	GUICtrlSetOnEvent(-1, "PrevHour")
+
+	$nexHour = GUICtrlCreateButton(">>", $pos[0] + $pos[2] + 10, 10, 30, 30)
+	If $currentHour = @HOUR Then GUICtrlSetState(-1, $GUI_DISABLE)
+	GUICtrlSetOnEvent(-1, "HextHour")
+
+	Local $closeAllButton = GUICtrlCreateButton("Close", 10, 10, 120, 30)
+	GUICtrlSetOnEvent(-1, "ChildrGuiCloseButtonClicked")
+
+	Local $switchView = GUICtrlCreateButton((GUICtrlRead($showOnlyError) = $GUI_CHECKED ? $switchTextAll : $switchTextError), _
+		$dW - 130, 10, 120, 30)
+	GUICtrlSetOnEvent(-1, "SwitchView")
+
+	If UBound($childrenButtons, $UBOUND_ROWS) Then ControlFocus($childGUI, "", $childrenButtons[0][0])
+
+	GUISetState(@SW_SHOW)
+EndFunc
+
+
+Func CreateScreenshotsThumbinals($data, $width, $height, $total, $progress, $progressLabel, $onlyError)
+	ToLog("---Drawing data---")
+	Local $tempArray[0][4]
+	$childrenButtons = $tempArray
+	Local $mainPath = IniRead($iniFile, "general", "screenshot_path", "")
+	Local $infoscreenColor = IniRead($iniFile, "general", "infoscreen_standard_color", "")
+	Local $infoscreenTimeTableColor = IniRead($iniFile, "general", "infoscreen_timetable_color", "")
+	Local $desktop_color = IniRead($iniFile, "general", "desktop_color", "")
+	$currentDate = @YEAR & @MON & @MDAY
+	Local $imageSizeX = 200
+	Local $imageSizeY = 160
+	Local $dist = 10
+	Local $countX = Floor($width / ($imageSizeX + $dist))
+	Local $totalWidth = $countX * $imageSizeX + ($countX - 1) * $dist
+	Local $startX = ($width - $totalWidth) / 2
+	Local $nameY = 20
+	Local $titleY = 40
+	Local $currentY = 0
+	Local $currentX = $startX
+	Local $compCounter = 0
+	Local $stringToReturn = ""
+
+	For $i = 0 To UBound($data, $UBOUND_ROWS) - 1
+		If $isGui Then
+			GUICtrlCreateLabel($data[$i][0], 0, $currentY, $width, $titleY, BitOR($SS_CENTERIMAGE, $SS_CENTER))
+			GUICtrlSetFont(-1, 20, $FW_BOLD)
+			GUICtrlSetBkColor(-1, $COLOR_SILVER)
+			$currentY += $titleY + $dist
+		Else
+			If $i Then $stringToReturn &= "|"
+			$stringToReturn &= "---" & $data[$i][0] & "---|"
+		EndIf
+
+		Local $currentData = $data[$i][3]
+		Local $infoscreenOu = IniRead($iniFile, $data[$i][0], "infoscreen_ou_to_run", "")
+		Local $infoscreenTimetableOu = IniRead($iniFile, $data[$i][0], "infoscreen_timetable_ou_to_run", "")
+
+		$infoscreenOu = StringSplit($infoscreenOu, ";", $STR_NOCOUNT)
+		$infoscreenTimetableOu = StringSplit($infoscreenTimetableOu, ";", $STR_NOCOUNT)
+
+		If Not UBound($currentData) Then
+			Local $tempString = "Cannot find informations in the active directory"
+
+			If Not $isGui Then
+				$stringToReturn &= $tempString & "|"
+				ContinueLoop
+			EndIf
+
+			GUICtrlCreateLabel($tempString, 0, $currentY, $width, $titleY, BitOR($SS_CENTERIMAGE, $SS_CENTER))
+			GUICtrlSetFont(-1, 14, $FW_BOLD)
+			GUICtrlSetColor(-1, $COLOR_WHITE)
+			GUICtrlSetBkColor(-1, $COLOR_RED)
+			$currentY += $titleY + $dist
+			ContinueLoop
+		EndIf
+
+		Local $strInStr = StringInStr(@ComputerName, $data[$i][0])
+		Local $rootPath = $strInStr ? $data[$i][1] : $mainPath
+		Local $resultPath = $data[$i][0] & "\" & $currentDate & "\" & $currentHour & "\" & "*" & ".jpg"
+
+		Local $computersWithProblems = 0
+
+		For $x = 1 To UBound($currentData) - 1
+			$compCounter += 1
+
+			If $isGui Then
+				GUICtrlSetData($progress, ($compCounter / $total) * 100)
+				GUICtrlSetData($progressLabel, "Completed: " & $compCounter & " / " & $total & " current: " & $currentData[$x][1])
+			EndIf
+
+			Local $path = $rootPath & StringReplace($resultPath, "*", "_preview_" & $currentData[$x][1])
+
+			If Not FileExists($path) Then _
+				$path = ($strInStr ? $mainPath : $data[$i][1]) & StringReplace($resultPath, "*", "_preview_" & $currentData[$x][1])
+
+			If Not FileExists($path) Then _
+				$path = $rootPath & StringReplace($resultPath, "*", $currentData[$x][1])
+
+			If Not FileExists($path) Then _
+				$path = ($strInStr ? $mainPath : $data[$i][1]) & StringReplace($resultPath, "*", $currentData[$x][1])
+
+			Local $optimalSize = 0
+			If FileExists($path) Then
+				Local $okColor = ""
+
+				If $onlyError Then
+					For $ouName In $infoscreenOu
+						If StringInStr($currentData[$x][2], $ouName) Then $okColor = $infoscreenColor
+					Next
+
+					For $ouName In $infoscreenTimetableOu
+						If StringInStr($currentData[$x][2], $ouName) Then $okColor = $infoscreenTimeTableColor
+					Next
+				EndIf
+
+				$optimalSize = GetOptimalControlSize($imageSizeX, $imageSizeY, $path, $onlyError, $okColor, $desktop_color)
+
+				If $optimalSize = -1 And $onlyError Then
+					If $x = UBound($currentData) - 1 Then
+						$currentX = $startX
+
+						If $computersWithProblems Then
+							$currentY += $imageSizeY + $nameY + $dist
+						Else
+							Local $tempString = "All computers are seems to be ok"
+							If $isGui Then
+								GUICtrlCreateLabel($tempString, 0, $currentY, $width, $titleY, BitOR($SS_CENTERIMAGE, $SS_CENTER))
+								GUICtrlSetFont(-1, 14, $FW_BOLD)
+								GUICtrlSetBkColor(-1, 0x00FF00)
+								$currentY += $titleY + $dist
+							Else
+								$stringToReturn &= $tempString & "|"
+							EndIf
+						EndIf
+					EndIf
+
+					ContinueLoop
+				EndIf
+			EndIf
+
+			$computersWithProblems += 1
+
+			If Not $isGui Then
+				$stringToReturn &= $currentData[$x][1]
+
+				If Not FileExists($path) Then
+					$stringToReturn &= " - not exist|"
+				Else
+					$stringToReturn &= " - not complies to normal state|"
+				EndIf
+
+				ContinueLoop
+			EndIf
+
+			Local $control[4]
+			$control[0] = GUICtrlCreateLabel("", $currentX - 1, $currentY - 1, $imageSizeX + 2, $imageSizeY + $nameY + 2, $SS_GRAYRECT)
+			GUICtrlSetOnEvent(-1, "FormComputerDetails")
+
+			If Not FileExists($path) Then
+				GUICtrlCreateLabel("Not exist", $currentX, $currentY, $imageSizeX, $imageSizeY, BitOR($SS_CENTER, $SS_CENTERIMAGE))
+				GUICtrlSetBkColor(-1, $COLOR_RED)
+				GUICtrlSetColor(-1, $COLOR_WHITE)
+				GUICtrlSetFont(-1, 14, $FW_BOLD)
+			Else
+				GUICtrlCreateLabel("", $currentX, $currentY, $imageSizeX, $imageSizeY, $SS_WHITERECT)
+				Local $picX = $currentX + ($imageSizeX - $optimalSize[0]) / 2
+				Local $picY = $currentY + ($imageSizeY - $optimalSize[1]) / 2
+				Local $picW = $optimalSize[0]
+				Local $picH = $optimalSize[1]
+				GUICtrlCreatePic($path, $picX, $picY, $picW, $picH)
+				GUICtrlSetImage(-1, $path)
+			EndIf
+
+			$control[3] = GUICtrlCreateLabel($currentData[$x][1], $currentX, $currentY + $imageSizeY, _
+				$imageSizeX, $nameY, BitOR($SS_CENTERIMAGE, $SS_CENTER))
+			GUICtrlSetBkColor(-1, $COLOR_WHITE)
+
+			$control[1] = $data[$i][0]
+			$control[2] = $currentData[$x][1]
+			_ArrayTranspose($control)
+			_ArrayAdd($childrenButtons, $control)
+
+			$currentX += $imageSizeX + $dist
+			If $currentX + $imageSizeX > $width - $startX Or $x = UBound($currentData) - 1 Then
+				$currentX = $startX
+				$currentY += $imageSizeY + $nameY + $dist
+			EndIf
+		Next
+	Next
+
+	If Not $isGui Then Return $stringToReturn
+
+	Return $currentY
+EndFunc
+
+
 Func CreateControlForDetailView($path)
 	ToLog("---CreateControlForDetailView---")
 	Local $newId[2]
@@ -650,10 +631,7 @@ Func CreateControlForDetailView($path)
 		GUICtrlSetColor(-1, $COLOR_WHITE)
 		GUICtrlSetFont(-1, 26, $FW_BOLD)
 	Else
-;~ 		ToLog("dW: " & $dW & " dH: " & $dH)
-;~ 		ToLog("opW: " & $dW - 20 & " opH: " & $dH - 70)
 		Local $optimalSize = GetOptimalControlSize($dW - 20, $dH - 60, $path)
-;~ 		ToLog(_ArrayToString($optimalSize))
 
 		$startX = $startX + ($controlWidth - $optimalSize[0]) / 2
 		$startY = $startY + ($controlHeight - $optimalSize[1]) / 2
@@ -664,10 +642,92 @@ Func CreateControlForDetailView($path)
 		GUICtrlSetState(-1, $GUI_HIDE)
 		$newId[1] = GUICtrlCreatePic($path, $startX, $startY, $controlWidth, $controlHeight, $SS_CENTERIMAGE)
 		GUICtrlSetState($newId[0], $GUI_SHOW)
-;~ 		GUICtrlSetImage(-1, $path)
 	EndIf
 
 	Return $newId
+EndFunc
+
+
+
+
+Func GetAdResultsForSelectedItems($array)
+	If Not IsArray($array) Or Not Ubound($array) Then Return
+
+	_AD_Open()
+	If @error Then
+		MsgBox(16, "GetAdResultsForSelectedItems", "Function _AD_Open encountered a problem. @error = " & _
+			@error & ", @extended = " & @extended)
+		Return
+	EndIf
+
+	Local $sFQDN = _AD_SamAccountNameToFQDN()
+	Local $iPos = StringInStr($sFQDN, ",")
+	Local $sOU = StringMid($sFQDN, $iPos + 1)
+	Local $aObjects[1][1]
+
+	$currentHour = @HOUR
+	Local $tempArray[0][4]
+	$totalComputers = 0
+
+	For $i = 0 To UBound($array) - 1
+		Local $currentOu[1][4]
+		$currentOu[0][0] = $array[$i]
+		$currentOu[0][1] = IniRead($iniFile, $currentOu[0][0], "screenshot_optional_path", "")
+		$currentOu[0][2] = IniRead($iniFile, $currentOu[0][0], "main_ou", "")
+
+		If $currentOu[0][2] Then
+			Local $result = _AD_GetObjectsInOU($currentOu[0][2], "(&(objectCategory=computer)(name=*))", 2, "objectCategory,cn,distinguishedName")
+
+			If @error Then
+				MsgBox(64, "GetAdResultsForSelectedItems", "No OUs could be found for " & $currentOu[0][2])
+			Else
+				$currentOu[0][3] = $result
+				$totalComputers += $result[0][0]
+			EndIf
+		EndIf
+
+		_ArrayAdd($tempArray, $currentOu)
+	Next
+
+	_AD_Close()
+
+	Return $tempArray
+EndFunc
+
+
+Func CheckSelected()
+	Local $ret = False
+	For $i = 0 To _GUICtrlListView_GetItemCount($listView)
+		If _GUICtrlListView_GetItemSelected($listView, $i) Then
+		 $ret = True
+		 GUICtrlSetState($viewButton, $GUI_ENABLE)
+		 ExitLoop
+		EndIf
+	Next
+	If Not $ret Then GUICtrlSetState($viewButton, $GUI_DISABLE)
+EndFunc
+
+
+Func PrevHour()
+	ToLog("---PrevHour---")
+	$currentHour -= 1
+	If $currentHour = 0 Then GUICtrlSetState($prevHour, $GUI_DISABLE)
+	CreateChildViewArea()
+EndFunc
+
+
+Func HextHour()
+	ToLog("---HextHour----")
+	$currentHour += 1
+	If $currentHour = 23 Then GUICtrlSetState($nexHour, $GUI_DISABLE)
+	CreateChildViewArea()
+EndFunc
+
+
+Func SwitchView()
+	ToLog("---SwitchView---")
+	GUICtrlSetState($showOnlyError, GUICtrlRead($showOnlyError) = $GUI_CHECKED ? $GUI_UNCHECKED : $GUI_CHECKED)
+	CreateChildViewArea()
 EndFunc
 
 
@@ -680,14 +740,10 @@ Func GetOptimalControlSize($width, $height, $path, $checkError = False, $okColor
 	_GDIPlus_Shutdown()
 
 	If $checkError Then
-;~ 		ToLog("CheckError")
 		Local $pixelsColor[8]
 
 		Local $tmp = StringReplace($path, "_preview_", "")
 		If FileExists($tmp) Then $path = $tmp
-
-
-;~ 		ToLog("GetOptimalControlSize: " & $path & " " & $checkError & " " & $okColor & " " & $errorColor)
 
 		_GDIPlus_Startup()
 		Local $imageToCheck = _GDIPlus_ImageLoadFromFile($path)
@@ -709,7 +765,6 @@ Func GetOptimalControlSize($width, $height, $path, $checkError = False, $okColor
 
 		If $okColor Then
 			$okColor = StringSplit($okColor, ";", $STR_NOCOUNT)
-;~ 			_ArrayDisplay($okColor)
 
 			For $color In $okColor
 				If StringLen($color) = 6 Then
@@ -726,9 +781,6 @@ Func GetOptimalControlSize($width, $height, $path, $checkError = False, $okColor
 			Next
 		EndIf
 	EndIf
-
-;~ 	ToLog("$imageWidth: " & $imageWidth & " $imageHeight: " & $imageHeight)
-;~ 	ToLog("$width: " & $width & " $height: " & $height)
 
 	Local $toReturn[2]
 
@@ -761,8 +813,6 @@ Func IsColorsComplies($rawColorsArray, $colorToCheck)
 		$checkCol[0] = StringLeft($colorToCheck, 2)
 		$checkCol[1] = StringMid($colorToCheck, 2, 2)
 		$checkCol[2] = StringRight($colorToCheck, 2)
-
-;~ 		ToLog("cur: " & _ArrayToString($curCol) & " check: " & _ArrayToString($checkCol))
 
 		Local $colDiff = 0
 		For $x = 0 To 2
@@ -811,9 +861,117 @@ Func GetMonitorInfos($hMonitor, ByRef $arMonitorInfos)
 EndFunc
 
 
+Func SilentModeCheckScreenshots()
+	$selectedItems = GetAdResultsForSelectedItems($allSections)
+	Local $message = CreateScreenshotsThumbinals($selectedItems, 0, 0, 0, 0, 0, True)
+	$messageToSend = StringReplace($message, "|", @CRLF)
+	SendEmail()
+EndFunc
+
+
+Func SendEmail()
+   If Not $send_email Then Exit
+
+   Local $from = "Infoscreen screenshots viewer"
+   Local $title = "Infosystems daily report"
+
+   ToLog(@CRLF & "--- Sending email")
+   If _INetSmtpMailCom($server, $from, $login, $to, _
+		 $title, $messageToSend, "", "", "", $login, $password) <> 0 Then
+
+	  _INetSmtpMailCom($server_backup, $from, $login_backup, $to_backup, _
+		 $title, $messageToSend, "", "", "", $login_backup, $password_backup)
+   EndIf
+
+   Exit
+EndFunc
+
+
+Func _INetSmtpMailCom($s_SmtpServer, $s_FromName, $s_FromAddress, $s_ToAddress, _
+   $s_Subject = "", $as_Body = "", $s_AttachFiles = "", $s_CcAddress = "", _
+   $s_BccAddress = "", $s_Username = "", $s_Password = "",$IPPort=25, $ssl=0)
+
+   Local $objEmail = ObjCreate("CDO.Message")
+   Local $i_Error = 0
+   Local $i_Error_desciption = ""
+
+   $objEmail.From = '"' & $s_FromName & '" <' & $s_FromAddress & '>'
+   $objEmail.To = $s_ToAddress
+
+   If $s_CcAddress <> "" Then $objEmail.Cc = $s_CcAddress
+   If $s_BccAddress <> "" Then $objEmail.Bcc = $s_BccAddress
+
+   $objEmail.Subject = $s_Subject
+
+   If StringInStr($as_Body,"<") and StringInStr($as_Body,">") Then
+	  $objEmail.HTMLBody = $as_Body
+   Else
+	  $objEmail.Textbody = $as_Body & @CRLF
+   EndIf
+
+   If $s_AttachFiles <> "" Then
+	  Local $S_Files2Attach = StringSplit($s_AttachFiles, ";")
+	  For $x = 1 To $S_Files2Attach[0] - 1
+		 $S_Files2Attach[$x] = _PathFull ($S_Files2Attach[$x])
+		 If FileExists($S_Files2Attach[$x]) Then
+			$objEmail.AddAttachment ($S_Files2Attach[$x])
+		 Else
+			$i_Error_desciption = $i_Error_desciption & @lf & 'File not found to attach: ' & $S_Files2Attach[$x]
+			SetError(1)
+			return 0
+		 EndIf
+	  Next
+   EndIf
+
+   $objEmail.Configuration.Fields.Item ("http://schemas.microsoft.com/cdo/configuration/sendusing") = 2
+   $objEmail.Configuration.Fields.Item ("http://schemas.microsoft.com/cdo/configuration/smtpserver") = $s_SmtpServer
+   $objEmail.Configuration.Fields.Item ("http://schemas.microsoft.com/cdo/configuration/smtpserverport") = $IPPort
+
+   If $s_Username <> "" Then
+	  $objEmail.Configuration.Fields.Item ("http://schemas.microsoft.com/cdo/configuration/smtpauthenticate") = 1
+	  $objEmail.Configuration.Fields.Item ("http://schemas.microsoft.com/cdo/configuration/sendusername") = $s_Username
+	  $objEmail.Configuration.Fields.Item ("http://schemas.microsoft.com/cdo/configuration/sendpassword") = $s_Password
+   EndIf
+
+   If $Ssl Then
+	  $objEmail.Configuration.Fields.Item ("http://schemas.microsoft.com/cdo/configuration/smtpusessl") = True
+   EndIf
+
+   $objEmail.Configuration.Fields.Update
+   $objEmail.Send
+
+   if @error then
+	  SetError(2)
+   EndIf
+
+   Return @error
+EndFunc
+
+
 Func ToLog($message)
 	$message &= @CRLF
 	ConsoleWrite($message)
+EndFunc
+
+
+Func MY_WM_NOTIFY($hWnd, $Msg, $wParam, $lParam)
+	If  $wParam <> $listView Then Return
+
+	Local $tagNMHDR, $event, $hwndFrom, $code
+	$tagNMHDR = DllStructCreate("int;int;int", $lParam)
+	If @error Then Return
+	$event = DllStructGetData($tagNMHDR, 3)
+
+
+	If $event = $NM_CLICK Or $event = -12 Then
+		CheckSelected()
+	ElseIf $event = $NM_DBLCLK Then
+		$needToView = 1
+	EndIf
+
+	$tagNMHDR = 0
+	$lParam = 0
+	$event = 0
 EndFunc
 
 
